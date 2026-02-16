@@ -70,6 +70,26 @@ resource "google_storage_bucket_iam_member" "openclaw_gcs" {
 }
 
 # ──────────────────────────────────────────────
+# Secret Manager — Telegram Bot Token
+# ──────────────────────────────────────────────
+resource "google_secret_manager_secret" "telegram_token" {
+  secret_id = "openclaw-telegram-bot-token"
+
+  replication {
+    auto {}
+  }
+
+  labels = {
+    app = "openclaw"
+  }
+}
+
+resource "google_secret_manager_secret_version" "telegram_token" {
+  secret      = google_secret_manager_secret.telegram_token.id
+  secret_data = var.telegram_bot_token
+}
+
+# ──────────────────────────────────────────────
 # Secret Manager — OpenClaw Gateway Token
 # ──────────────────────────────────────────────
 resource "google_secret_manager_secret" "gateway_token" {
@@ -165,15 +185,16 @@ resource "google_cloud_run_v2_service" "openclaw" {
     containers {
       image = var.container_image
 
-      # Bind the WebSocket gateway to all interfaces on Cloud Run's port.
-      # command overrides ENTRYPOINT to run node directly.
+      # Write openclaw.json config then start the gateway.
       # --bind lan  → listen on 0.0.0.0 (not loopback)
       # --port 8080 → Cloud Run's required port
-      command = [
-        "node", "openclaw.mjs", "gateway",
-        "--allow-unconfigured",
-        "--bind", "lan",
-        "--port", "8080",
+      command = ["sh", "-c"]
+      args = [
+        join(" ", [
+          "mkdir -p /home/node/.openclaw &&",
+          "printf '%s' '{\"channels\":{\"telegram\":{\"enabled\":true,\"dmPolicy\":\"allowlist\",\"allowFrom\":[\"${var.allowed_user_ids}\"]}}}' > /home/node/.openclaw/openclaw.json &&",
+          "node openclaw.mjs gateway --allow-unconfigured --bind lan --port 8080",
+        ])
       ]
 
       resources {
@@ -187,6 +208,16 @@ resource "google_cloud_run_v2_service" "openclaw" {
       env {
         name  = "NODE_ENV"
         value = "production"
+      }
+
+      env {
+        name = "TELEGRAM_BOT_TOKEN"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.telegram_token.secret_id
+            version = "latest"
+          }
+        }
       }
 
       env {
@@ -250,6 +281,7 @@ resource "google_cloud_run_v2_service" "openclaw" {
   }
 
   depends_on = [
+    google_secret_manager_secret_version.telegram_token,
     google_secret_manager_secret_version.gateway_token,
     google_project_iam_member.openclaw_secret_accessor,
     google_storage_bucket_iam_member.openclaw_gcs,

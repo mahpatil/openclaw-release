@@ -16,6 +16,20 @@ variable "region" {
 }
 
 # ──────────────────────────────────────────────
+# Telegram
+# ──────────────────────────────────────────────
+variable "telegram_bot_token" {
+  description = "Telegram Bot Token from @BotFather. Required for Telegram channel support."
+  type        = string
+  sensitive   = true
+}
+
+variable "allowed_user_ids" {
+  description = "Comma-separated Telegram user IDs allowed to DM the bot (get from @userinfobot)"
+  type        = string
+}
+
+# ──────────────────────────────────────────────
 # OpenClaw Gateway
 # ──────────────────────────────────────────────
 variable "gateway_token" {
