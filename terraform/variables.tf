@@ -3,6 +3,12 @@ variable "project_id" {
   type        = string
 }
 
+variable "container_image" {
+  description = "Container image to deploy (defaults to the official alpine/openclaw image on Docker Hub)"
+  type        = string
+  default     = "docker.io/alpine/openclaw:latest"
+}
+
 variable "region" {
   description = "GCP region for all resources"
   type        = string
