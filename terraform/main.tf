@@ -163,7 +163,7 @@ resource "google_cloud_run_v2_service" "openclaw" {
     service_account = google_service_account.openclaw.email
 
     containers {
-      image = "alpine/openclaw:latest"
+      image = "us-central1-docker.pkg.dev/kaizenart-4d7f2/openclaw/tinyclaw:latest"
 
       # 512Mi is sufficient for webhook mode (no long-polling overhead)
       resources {
