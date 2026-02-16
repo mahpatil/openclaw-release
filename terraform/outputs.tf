@@ -1,15 +1,15 @@
 output "service_url" {
-  description = "Cloud Run service URL — use this as the Telegram webhook base URL"
+  description = "Cloud Run service URL — use this as the gateway URL in OpenClaw clients"
   value       = google_cloud_run_v2_service.openclaw.uri
 }
 
-output "webhook_url" {
-  description = "Full Telegram webhook URL to register with setWebhook"
-  value       = "${google_cloud_run_v2_service.openclaw.uri}/telegram/webhook"
+output "gateway_ws_url" {
+  description = "WebSocket URL for OpenClaw clients to connect to (wss://)"
+  value       = "wss://${replace(google_cloud_run_v2_service.openclaw.uri, "https://", "")}"
 }
 
-output "memory_bucket" {
-  description = "GCS bucket name where per-user memory files are stored"
+output "workspace_bucket" {
+  description = "GCS bucket name where OpenClaw config and workspace files are persisted"
   value       = google_storage_bucket.openclaw_memory.name
 }
 

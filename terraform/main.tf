@@ -21,7 +21,7 @@ provider "google" {
 }
 
 # ──────────────────────────────────────────────
-# GCS Bucket for persistent memory files
+# GCS Bucket for persistent OpenClaw workspace
 # ──────────────────────────────────────────────
 resource "google_storage_bucket" "openclaw_memory" {
   name                        = "${var.project_id}-openclaw-memory"
@@ -52,7 +52,7 @@ resource "google_storage_bucket" "openclaw_memory" {
 # ──────────────────────────────────────────────
 resource "google_service_account" "openclaw" {
   account_id   = "openclaw-family"
-  display_name = "OpenClaw Family Bot Service Account"
+  display_name = "OpenClaw Gateway Service Account"
 }
 
 # Allow Cloud Run SA to read secrets
@@ -70,10 +70,10 @@ resource "google_storage_bucket_iam_member" "openclaw_gcs" {
 }
 
 # ──────────────────────────────────────────────
-# Secret Manager — Telegram Bot Token
+# Secret Manager — OpenClaw Gateway Token
 # ──────────────────────────────────────────────
-resource "google_secret_manager_secret" "telegram_token" {
-  secret_id = "openclaw-telegram-bot-token"
+resource "google_secret_manager_secret" "gateway_token" {
+  secret_id = "openclaw-gateway-token"
 
   replication {
     auto {}
@@ -84,13 +84,13 @@ resource "google_secret_manager_secret" "telegram_token" {
   }
 }
 
-resource "google_secret_manager_secret_version" "telegram_token" {
-  secret      = google_secret_manager_secret.telegram_token.id
-  secret_data = var.telegram_bot_token
+resource "google_secret_manager_secret_version" "gateway_token" {
+  secret      = google_secret_manager_secret.gateway_token.id
+  secret_data = var.gateway_token
 }
 
 # ──────────────────────────────────────────────
-# Secret Manager — Groq API Key
+# Secret Manager — Groq API Key (optional)
 # ──────────────────────────────────────────────
 resource "google_secret_manager_secret" "groq_api_key" {
   secret_id = "openclaw-groq-api-key"
@@ -165,11 +165,21 @@ resource "google_cloud_run_v2_service" "openclaw" {
     containers {
       image = var.container_image
 
-      # 512Mi is sufficient for webhook mode (no long-polling overhead)
+      # Bind the WebSocket gateway to all interfaces on Cloud Run's port.
+      # command overrides ENTRYPOINT to run node directly.
+      # --bind lan  → listen on 0.0.0.0 (not loopback)
+      # --port 8080 → Cloud Run's required port
+      command = [
+        "node", "openclaw.mjs", "gateway",
+        "--allow-unconfigured",
+        "--bind", "lan",
+        "--port", "8080",
+      ]
+
       resources {
         limits = {
-          cpu    = "1"
-          memory = "512Mi"
+          cpu    = "2"
+          memory = "2Gi"
         }
         startup_cpu_boost = true
       }
@@ -180,25 +190,10 @@ resource "google_cloud_run_v2_service" "openclaw" {
       }
 
       env {
-        name  = "TELEGRAM_WEBHOOK_MODE"
-        value = "true"
-      }
-
-      env {
-        name  = "ALLOWED_USER_IDS"
-        value = var.allowed_user_ids
-      }
-
-      env {
-        name  = "MEMORY_DIR"
-        value = "/data/memory"
-      }
-
-      env {
-        name = "TELEGRAM_BOT_TOKEN"
+        name = "OPENCLAW_GATEWAY_TOKEN"
         value_source {
           secret_key_ref {
-            secret  = google_secret_manager_secret.telegram_token.secret_id
+            secret  = google_secret_manager_secret.gateway_token.secret_id
             version = "latest"
           }
         }
@@ -246,37 +241,23 @@ resource "google_cloud_run_v2_service" "openclaw" {
         }
       }
 
-      # GCS volume mount for persistent memory files
-      volume_mounts {
-        name       = "openclaw-memory"
-        mount_path = "/data/memory"
-      }
-    }
-
-    # GCS-backed volume (Cloud Run native GCS volume — no gcsfuse sidecar required)
-    volumes {
-      name = "openclaw-memory"
-      gcs {
-        bucket    = google_storage_bucket.openclaw_memory.name
-        read_only = false
-      }
     }
 
     scaling {
-      min_instance_count = 0 # Scale to zero — free when idle
-      max_instance_count = 1 # Family use: 1 instance is sufficient
+      min_instance_count = 1 # Keep alive — WebSocket clients need a persistent target
+      max_instance_count = 1 # Single-user gateway
     }
   }
 
   depends_on = [
-    google_secret_manager_secret_version.telegram_token,
+    google_secret_manager_secret_version.gateway_token,
     google_project_iam_member.openclaw_secret_accessor,
     google_storage_bucket_iam_member.openclaw_gcs,
   ]
 }
 
 # ──────────────────────────────────────────────
-# Allow Telegram to POST to the webhook (unauthenticated)
+# Allow clients to connect without GCP auth
 # ──────────────────────────────────────────────
 resource "google_cloud_run_v2_service_iam_member" "public" {
   name     = google_cloud_run_v2_service.openclaw.name

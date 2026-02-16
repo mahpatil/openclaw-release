@@ -1,26 +1,27 @@
-# OpenClaw on GCP Cloud Run — Family Telegram Bot
+# OpenClaw Gateway on GCP Cloud Run
 
-Self-host [alpine/openclaw](https://github.com/alpine-chat/openclaw) as a Telegram bot for your family, running on GCP Cloud Run with **zero idle cost** and automatic HTTPS.
+Self-host the [alpine/openclaw](https://hub.docker.com/r/alpine/openclaw) WebSocket gateway on GCP Cloud Run, so you can connect Claude Code from anywhere using `/gateway connect`.
 
 ## Architecture
 
 ```
-Family → Telegram → [Webhook POST] → Cloud Run (OpenClaw) → LLM API
-                                             ↓
-                                    GCS Bucket (memory files)
-                                    per-user persistent context
+Claude Code (laptop/phone)
+        │  wss://
+        ▼
+  Cloud Run (OpenClaw gateway)   ←── OPENCLAW_GATEWAY_TOKEN auth
+        │
+        ├── Groq / Gemini / Anthropic API  (LLM)
+        └── GCS Bucket  (workspace persistence across restarts)
 ```
 
-**Why Cloud Run over a VM:**
+**Why Cloud Run:**
 
-| | e2-micro VM | Cloud Run |
+| | Self-hosted VM | Cloud Run |
 |---|---|---|
-| Cost idle | $0 (free tier) | $0 (scales to zero) |
-| Cost active | $0 (free tier) | ~$0–$3/mo |
-| Cold start | None | 2–5 sec after idle |
-| Memory persistence | Local disk | GCS bucket |
-| Telegram mode | Long polling | Webhook |
-| HTTPS | Manual | Auto (managed) |
+| Cost idle | ~$5–10/mo | ~$0/mo (1 min-instance ≈ $2/mo) |
+| HTTPS | Manual cert | Auto (managed) |
+| Image updates | Manual | One command |
+| Auth | DIY | Gateway token |
 
 ---
 
@@ -29,32 +30,24 @@ Family → Telegram → [Webhook POST] → Cloud Run (OpenClaw) → LLM API
 - GCP project with billing enabled
 - [`gcloud` CLI](https://cloud.google.com/sdk/docs/install) installed and authenticated (`gcloud auth login`)
 - [`terraform`](https://developer.hashicorp.com/terraform/install) >= 1.0
-- A Telegram bot token (see Phase 1 below)
-- At least one LLM API key (see Phase 2 below)
+- [Claude Code](https://claude.ai/claude-code) installed locally
+- At least one LLM API key (see Phase 1 below)
 
 ---
 
 ## Setup
 
-### Phase 1 — Create a Telegram Bot (5 min)
+### Phase 1 — Get an LLM API Key (5 min)
 
-1. Open Telegram and message **@BotFather**
-2. Send `/newbot` and follow the prompts — choose a name and username
-3. Copy the **bot token** (format: `1234567890:AABBCCDDEEFFaabbccddeeff...`)
-4. Each family member messages **@userinfobot** to get their numeric **user ID**
-5. Optional: in BotFather → `/mybots` → Bot Settings → Group Privacy → **OFF** (needed for group chats)
+| Provider | Sign-up | Free Tier |
+|---|---|---|
+| **Groq** | [console.groq.com](https://console.groq.com) | 6 000 tokens/min, Llama 3.3 70B |
+| **Google Gemini** | [aistudio.google.com](https://aistudio.google.com/app/apikey) | 15 RPM, 1M tokens/day |
+| **Anthropic** | [console.anthropic.com](https://console.anthropic.com) | Pay-per-use |
 
-### Phase 2 — Get an LLM API Key (5 min)
+You only need one. Groq is the recommended starting point — free and fast.
 
-| Provider | Sign-up | Free Tier | Recommended for |
-|---|---|---|---|
-| **Groq** | [console.groq.com](https://console.groq.com) | 6 000 tokens/min, Llama 3.3 70B | Starting point — fast & free |
-| **Google Gemini** | [aistudio.google.com](https://aistudio.google.com/app/apikey) | 15 RPM, 1M tokens/day | High volume use |
-| **Anthropic** | [console.anthropic.com](https://console.anthropic.com) | Pay-per-use | Best quality (Claude) |
-
-You only need one. Groq is the recommended starting point — free and very capable.
-
-### Phase 3 — Configure Terraform
+### Phase 2 — Configure Terraform
 
 ```bash
 cd openclaw-gcp
@@ -64,134 +57,99 @@ cp .env.example terraform/terraform.tfvars
 Edit `terraform/terraform.tfvars`:
 
 ```hcl
-project_id         = "your-gcp-project-id"
-telegram_bot_token = "1234567890:AABBCCDDEEFFaabbccddeeff..."
-allowed_user_ids   = "123456789,987654321"   # comma-separated family IDs
-groq_api_key       = "gsk_..."               # at least one LLM key
+project_id    = "your-gcp-project-id"
+gateway_token = "your-strong-random-token"   # openssl rand -hex 32
+groq_api_key  = "gsk_..."                    # at least one LLM key
 ```
 
 > `terraform.tfvars` is in `.gitignore` — it will never be committed.
 
-### Phase 4 — Deploy
+### Phase 3 — Deploy
 
 ```bash
-export TELEGRAM_BOT_TOKEN="1234567890:AABBCCDDEEFFaabbccddeeff..."
 ./scripts/deploy.sh your-gcp-project-id
 ```
 
 The script:
 1. Enables Cloud Run, Secret Manager, Storage, and IAM APIs
 2. Runs `terraform apply` (creates all GCP resources)
-3. Registers the Cloud Run URL as the Telegram webhook automatically
 
 **Expected output:**
 ```
 === Deployment Summary ===
-  Service URL:    https://openclaw-family-abc123-uc.a.run.app
-  Webhook URL:    https://openclaw-family-abc123-uc.a.run.app/telegram/webhook
-  Memory bucket:  gs://your-project-openclaw-memory/
-
-Webhook registered successfully!
+  Service URL:      https://openclaw-family-abc123-uc.a.run.app
+  Gateway WS URL:   wss://openclaw-family-abc123-uc.a.run.app
+  Workspace bucket: gs://your-project-openclaw-memory/
 ```
 
-### Phase 5 — Verify
+### Phase 4 — Connect Claude Code
 
-```bash
-# Check webhook is registered
-curl "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo" | python3 -m json.tool
+In any Claude Code session, run:
 
-# Send a test message to your bot on Telegram
-# First response may take 2–5 seconds (cold start) — subsequent messages are instant
-
-# Check Cloud Run logs
-gcloud run logs read --service openclaw-family --region us-central1 --limit 30
-
-# Browse memory files (appear after first conversation)
-gsutil ls gs://YOUR_PROJECT-openclaw-memory/
+```
+/gateway connect wss://openclaw-family-abc123-uc.a.run.app
 ```
 
----
+When prompted for a token, enter the value you set as `gateway_token` in `terraform.tfvars`.
 
-## Usage
+To make the connection permanent (auto-connect on startup), add it to your Claude Code config:
 
-Once deployed, family members can message the bot directly or in a group chat.
-
-### Adding a New Family Member
-
-1. They message **@userinfobot** to get their user ID
-2. Update `allowed_user_ids` in `terraform/terraform.tfvars`
-3. Apply the change:
-   ```bash
-   cd terraform && terraform apply
-   ```
-
-Or update without Terraform:
-```bash
-gcloud run services update openclaw-family \
-  --region us-central1 \
-  --update-env-vars ALLOWED_USER_IDS="id1,id2,id3,new_id"
-```
-
-### Memory
-
-Each family member gets **isolated persistent memory** stored in the GCS bucket, keyed by their Telegram user ID. The bot remembers context across conversations automatically.
-
-Browse memory files:
-```bash
-gsutil ls gs://YOUR_PROJECT-openclaw-memory/
-```
-
-Clear a specific user's memory:
-```bash
-gsutil rm gs://YOUR_PROJECT-openclaw-memory/USER_ID/**
+```json
+{
+  "gateway": {
+    "url": "wss://openclaw-family-abc123-uc.a.run.app",
+    "token": "your-gateway-token"
+  }
+}
 ```
 
 ---
 
 ## Operations
 
-### Update the OpenClaw Image
-
-```bash
-gcloud run deploy openclaw-family \
-  --image alpine/openclaw:latest \
-  --region us-central1
-```
-
 ### View Logs
 
 ```bash
-# Last 50 log lines
-gcloud run logs read --service openclaw-family --region us-central1 --limit 50
+# Recent logs
+gcloud run services logs read openclaw-family --region us-central1 --limit 50
 
-# Stream live logs
+# Stream live
 gcloud beta run services logs tail openclaw-family --region us-central1
 ```
 
-### Update an Environment Variable
+### Update the OpenClaw Image
 
 ```bash
-gcloud run services update openclaw-family \
-  --region us-central1 \
-  --update-env-vars ALLOWED_USER_IDS="id1,id2,id3"
+cd terraform && terraform apply -var="project_id=YOUR_PROJECT"
 ```
 
-### Rotate an API Key
+Or force a new revision without config changes:
+
+```bash
+gcloud run deploy openclaw-family \
+  --image docker.io/alpine/openclaw:latest \
+  --region us-central1
+```
+
+### Rotate the Gateway Token
 
 ```bash
 # Add a new secret version
-echo -n "new-key-value" | gcloud secrets versions add openclaw-groq-api-key --data-file=-
+echo -n "new-token-value" | gcloud secrets versions add openclaw-gateway-token --data-file=-
 
-# Cloud Run will pick it up on next cold start (or redeploy to force it)
-gcloud run deploy openclaw-family --image alpine/openclaw:latest --region us-central1
+# Update terraform.tfvars and re-apply to keep state in sync
+cd terraform && terraform apply -var="project_id=YOUR_PROJECT"
 ```
 
-### Re-register the Webhook
+### Rotate an LLM API Key
 
-If the Cloud Run URL ever changes (rare):
 ```bash
-export TELEGRAM_BOT_TOKEN="..."
-./scripts/register_webhook.sh
+echo -n "new-key-value" | gcloud secrets versions add openclaw-groq-api-key --data-file=-
+
+# Force Cloud Run to pick up the new version
+gcloud run deploy openclaw-family \
+  --image docker.io/alpine/openclaw:latest \
+  --region us-central1
 ```
 
 ### Tear Down
@@ -204,16 +162,17 @@ cd terraform && terraform destroy
 
 ## Cost
 
-| Resource | Free Tier | Family Usage | Cost |
-|---|---|---|---|
-| Cloud Run requests | 2M/month | ~3K/month | $0 |
-| Cloud Run compute (512Mi) | 360K GB-s/month | ~10K GB-s/month | $0 |
-| GCS memory storage | 5 GB free | <10 MB | $0 |
-| GCS operations | 5K ops free | ~1K/month | $0 |
-| Secret Manager | 6 secrets free | 4 secrets | $0 |
-| **Total** | | | **$0/month** |
+With `min_instance_count = 1` (keeps the gateway always on):
 
-Heavy use (10+ family members active daily) may reach $1–3/month on compute. LLM costs remain $0 with Groq or Gemini free tiers.
+| Resource | Always-on cost | Notes |
+|---|---|---|
+| Cloud Run (2 vCPU / 2 Gi, 1 min-instance) | ~$2–4/mo | Billed for idle time |
+| GCS workspace storage | ~$0 | < 10 MB typical |
+| Secret Manager | $0 | Within free tier (6 secrets) |
+| LLM API | $0 | Groq / Gemini free tiers |
+| **Total** | **~$2–4/mo** | |
+
+To reduce to ~$0 when not in use, set `min_instance_count = 0` in `main.tf` — but expect a 5–10s cold start when reconnecting.
 
 ---
 
@@ -225,21 +184,21 @@ openclaw-gcp/
 ├── .gitignore                    # Excludes tfstate, tfvars, .env files
 ├── terraform/
 │   ├── main.tf                   # All GCP resources (Cloud Run, GCS, IAM, secrets)
-│   ├── variables.tf              # Input variables (project, keys, allowed user IDs)
-│   └── outputs.tf                # service_url, webhook_url, memory_bucket
+│   ├── variables.tf              # Input variables (project, gateway token, LLM keys)
+│   ├── outputs.tf                # service_url, gateway_ws_url, workspace_bucket
+│   └── terraform.tfvars          # Your values — gitignored, never committed
 └── scripts/
-    ├── deploy.sh                 # Full deploy: APIs → terraform → webhook registration
-    └── register_webhook.sh       # Register Cloud Run URL with Telegram setWebhook
+    └── deploy.sh                 # Full deploy: enable APIs → terraform apply
 ```
 
 ### GCP Resources Created
 
 | Resource | Name | Purpose |
 |---|---|---|
-| Cloud Run service | `openclaw-family` | Runs the OpenClaw container |
-| GCS bucket | `PROJECT-openclaw-memory` | Persistent per-user memory |
+| Cloud Run service | `openclaw-family` | Runs the OpenClaw gateway |
+| GCS bucket | `PROJECT-openclaw-memory` | Persistent workspace across restarts |
 | Service account | `openclaw-family@...` | Least-privilege identity for Cloud Run |
-| Secret | `openclaw-telegram-bot-token` | Telegram bot token |
+| Secret | `openclaw-gateway-token` | Shared auth token for client connections |
 | Secret | `openclaw-groq-api-key` | Groq API key |
 | Secret | `openclaw-gemini-api-key` | Gemini API key (if provided) |
 | Secret | `openclaw-anthropic-api-key` | Anthropic API key (if provided) |
@@ -248,23 +207,21 @@ openclaw-gcp/
 
 ## Troubleshooting
 
-**Bot doesn't respond after first deploy**
-- Check webhook: `curl "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"`
-- Check logs: `gcloud run logs read --service openclaw-family --region us-central1`
-- First response after idle takes 2–5 seconds (cold start) — send a second message if the first gets no reply
+**Gateway won't start / OOM crash**
+- The gateway requires at least 2 Gi of memory. Check `terraform/main.tf` resources limits.
+- View crash logs: `gcloud logging read 'resource.labels.service_name="openclaw-family"' --project YOUR_PROJECT --limit 20`
 
-**`Forbidden` error in logs**
-- The user's Telegram ID is not in `ALLOWED_USER_IDS`
-- Add their ID and run `terraform apply` or update via `gcloud run services update`
+**`/gateway connect` says connection refused**
+- Verify the service is running: `gcloud run services describe openclaw-family --region us-central1`
+- Check that port 8080 is bound: look for `[gateway] listening on ws://0.0.0.0:8080` in logs
 
-**`Secret not found` error**
-- The secret version may not have been created (empty API key variable)
-- Add the key to `terraform.tfvars` and run `terraform apply`
+**Auth error on connect**
+- The token entered must match `gateway_token` in `terraform.tfvars` (stored in Secret Manager as `openclaw-gateway-token`)
+- Verify the secret: `gcloud secrets versions access latest --secret=openclaw-gateway-token`
 
-**Memory not persisting**
-- Check the GCS bucket: `gsutil ls gs://YOUR_PROJECT-openclaw-memory/`
-- Verify the service account has `storage.objectAdmin` on the bucket: `gcloud projects get-iam-policy PROJECT_ID`
+**`Secret not found` on deploy**
+- The secret version may not exist (empty variable). Add the key to `terraform.tfvars` and re-run `terraform apply`.
 
-**Webhook returns `{"ok":false}`**
-- The Cloud Run service may still be deploying — wait 30 seconds and re-run `register_webhook.sh`
-- Ensure the service URL is publicly reachable (the `allUsers` IAM binding must be applied)
+**Cold start takes too long**
+- With `min_instance_count = 1` the gateway is always warm. If you set it to 0, expect 5–10s cold starts.
+- Extend the startup probe timeout in Cloud Run if needed.

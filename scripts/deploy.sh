@@ -54,26 +54,19 @@ echo "Terraform apply complete."
 
 # ── Show outputs ──────────────────────────────
 SERVICE_URL=$(terraform output -raw service_url)
-WEBHOOK_URL=$(terraform output -raw webhook_url)
-MEMORY_BUCKET=$(terraform output -raw memory_bucket)
+GATEWAY_WS_URL=$(terraform output -raw gateway_ws_url)
+WORKSPACE_BUCKET=$(terraform output -raw workspace_bucket)
 
 echo ""
 echo "=== Deployment Summary ==="
-echo "  Service URL:    ${SERVICE_URL}"
-echo "  Webhook URL:    ${WEBHOOK_URL}"
-echo "  Memory bucket:  gs://${MEMORY_BUCKET}/"
-echo ""
-
-# ── Register Telegram webhook ─────────────────
-echo "Registering Telegram webhook..."
-cd "${SCRIPT_DIR}"
-"${SCRIPT_DIR}/register_webhook.sh"
-
+echo "  Service URL:      ${SERVICE_URL}"
+echo "  Gateway WS URL:   ${GATEWAY_WS_URL}"
+echo "  Workspace bucket: gs://${WORKSPACE_BUCKET}/"
 echo ""
 echo "=== Done! ==="
 echo ""
 echo "Next steps:"
-echo "  1. Message your bot on Telegram — expect 2-5s cold start on first message"
-echo "  2. Check logs: gcloud run logs read --service openclaw-family --region ${TERRAFORM_DIR}"
-echo "  3. Browse memory: gsutil ls gs://${MEMORY_BUCKET}/"
+echo "  1. In Claude Code, run: /gateway connect ${GATEWAY_WS_URL}"
+echo "  2. Check logs: gcloud run logs read --service openclaw-family --region us-central1"
+echo "  3. Browse workspace: gsutil ls gs://${WORKSPACE_BUCKET}/"
 echo ""
