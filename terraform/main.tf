@@ -192,7 +192,7 @@ resource "google_cloud_run_v2_service" "openclaw" {
       args = [
         join(" ", [
           "mkdir -p /home/node/.openclaw &&",
-          "printf '%s' '{\"agents\":{\"defaults\":{\"model\":{\"primary\":\"groq/llama-3.3-70b-versatile\",\"fallbacks\":[\"google/gemini-2.0-flash\"]}}},\"channels\":{\"telegram\":{\"enabled\":true,\"dmPolicy\":\"allowlist\",\"allowFrom\":[\"${var.allowed_user_ids}\"]}}}' > /home/node/.openclaw/openclaw.json &&",
+          "printf '%s' '{\"agents\":{\"defaults\":{\"model\":{\"primary\":\"groq/llama-3.3-70b-versatile\",\"fallbacks\":[\"google/gemini-2.0-flash\"]},\"compaction\":{\"reserveTokensFloor\":4000}}},\"channels\":{\"telegram\":{\"enabled\":true,\"dmPolicy\":\"allowlist\",\"allowFrom\":[\"${var.allowed_user_ids}\"]}}}' > /home/node/.openclaw/openclaw.json &&",
           "node openclaw.mjs gateway --allow-unconfigured --bind lan --port 8080",
         ])
       ]
